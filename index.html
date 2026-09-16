@@ -188,6 +188,30 @@
     font-size:0.75rem;
   }
 
+  .insight-card{
+    background:var(--card);
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    padding:13px 14px;
+    margin-bottom:10px;
+    box-shadow:0 1px 2px var(--shadow);
+  }
+  .insight-card .headline{
+    font-size:1rem;
+    margin-bottom:3px;
+  }
+  .insight-card .sub{
+    font-size:0.78rem;
+    color:var(--ink-soft);
+    font-family:"SF Mono","Menlo",monospace;
+  }
+  .insight-empty{
+    color:var(--ink-soft);
+    font-style:italic;
+    font-size:0.88rem;
+    padding:4px 2px 14px;
+  }
+
   .habit-card{
     display:flex;
     align-items:center;
@@ -399,6 +423,7 @@
 
   <nav>
     <button class="tab-btn active" data-tab="today">Today</button>
+    <button class="tab-btn" data-tab="insights">Insights</button>
     <button class="tab-btn" data-tab="history">History</button>
     <button class="tab-btn" data-tab="manage">Habits</button>
   </nav>
@@ -431,6 +456,17 @@
     <div class="section-title">HABITS TO AVOID</div>
     <div id="badList"></div>
     <div id="todayEmpty" class="empty" style="display:none;">No habits set up yet. Go to the Habits tab to add some.</div>
+  </div>
+
+  <div id="tab-insights" style="display:none;">
+    <div class="section-title">WEEK OVER WEEK</div>
+    <div id="insightTrend"></div>
+
+    <div class="section-title">STREAKS</div>
+    <div id="insightStreaks"></div>
+
+    <div class="section-title">HABIT PATTERNS (LAST 30 DAYS)</div>
+    <div id="insightHabits"></div>
   </div>
 
   <div id="tab-history" style="display:none;">
@@ -742,6 +778,35 @@
     return keys;
   }
 
+  function previousWeekKeys(){
+    var thisStart = startOfWeek(new Date());
+    var prevStart = new Date(thisStart);
+    prevStart.setDate(prevStart.getDate() - 7);
+    var keys = [];
+    for(var i=0;i<7;i++){
+      var d = new Date(prevStart);
+      d.setDate(prevStart.getDate()+i);
+      keys.push(dateKey(d));
+    }
+    return keys;
+  }
+
+  function keyToDate(key){
+    var parts = key.split('-');
+    return new Date(parseInt(parts[0],10), parseInt(parts[1],10)-1, parseInt(parts[2],10));
+  }
+
+  function last30DayKeys(){
+    var keys = [];
+    var now = new Date();
+    for(var i=0;i<30;i++){
+      var d = new Date(now);
+      d.setDate(now.getDate()-i);
+      keys.push(dateKey(d));
+    }
+    return keys;
+  }
+
   function monthKeys(){
     var now = new Date();
     var keys = [];
@@ -772,6 +837,49 @@
       d.setDate(d.getDate() - 1);
     }
     return streak;
+  }
+
+  function longestCleanStreak(){
+    var earliest = earliestLogDate();
+    if(!earliest) return 0;
+    var maxStreak = 0, cur = 0;
+    var d = keyToDate(earliest);
+    var end = new Date();
+    while(d <= end){
+      var key = dateKey(d);
+      if(dayBreakdown(key).badCount > 0){
+        cur = 0;
+      } else {
+        cur++;
+        if(cur > maxStreak) maxStreak = cur;
+      }
+      d.setDate(d.getDate()+1);
+    }
+    return maxStreak;
+  }
+
+  // Per-habit stats over a set of candidate date keys, counted only
+  // against days that actually have a log entry (days you opened
+  // the app and touched something), not raw calendar days.
+  function habitStats(windowKeys){
+    var activeDays = windowKeys.filter(function(k){ return !!state.logs[k]; });
+    var denom = activeDays.length;
+    var stats = state.habits.map(function(h){
+      var doneCount = 0, totalPoints = 0;
+      activeDays.forEach(function(k){
+        if(state.logs[k][h.id]){
+          doneCount++;
+          totalPoints += (h.type === 'good' ? h.weight : -h.weight);
+        }
+      });
+      return {
+        habit: h,
+        doneCount: doneCount,
+        rate: denom ? doneCount/denom : 0,
+        totalPoints: totalPoints
+      };
+    });
+    return { denom: denom, stats: stats };
   }
 
   function fmtScore(n){
@@ -982,17 +1090,123 @@
     });
   }
 
+  function insightCard(headline, sub){
+    var div = document.createElement('div');
+    div.className = 'insight-card';
+    div.innerHTML = '<div class="headline">'+escapeHtml(headline)+'</div><div class="sub">'+escapeHtml(sub)+'</div>';
+    return div;
+  }
+
+  function renderInsights(){
+    // --- Week over week (fair comparison: same number of days elapsed) ---
+    var thisWeekKeys = weekKeys();
+    var daysElapsed = thisWeekKeys.length;
+    var prevAllKeys = previousWeekKeys();
+    var prevKeysSoFar = prevAllKeys.slice(0, daysElapsed);
+    var havePrevWeekData = prevAllKeys.some(function(k){ return !!state.logs[k]; });
+
+    var trendEl = document.getElementById('insightTrend');
+    if(!havePrevWeekData){
+      trendEl.innerHTML = '';
+      trendEl.appendChild(Object.assign(document.createElement('div'), {
+        className: 'insight-empty',
+        textContent: 'Not enough history yet — this fills in once you have a full previous week logged.'
+      }));
+    } else {
+      var thisB = periodBreakdown(thisWeekKeys);
+      var prevB = periodBreakdown(prevKeysSoFar);
+      var diff = thisB.net - prevB.net;
+      trendEl.innerHTML = '';
+      trendEl.appendChild(insightCard(
+        fmtScore(thisB.net) + ' so far this week, vs ' + fmtScore(prevB.net) + ' at the same point last week',
+        (diff >= 0 ? 'Up ' : 'Down ') + Math.abs(diff) + ' points on that comparison'
+      ));
+    }
+
+    // --- Streaks ---
+    var current = cleanStreak();
+    var longest = longestCleanStreak();
+    var streaksEl = document.getElementById('insightStreaks');
+    streaksEl.innerHTML = '';
+    streaksEl.appendChild(insightCard(
+      current + '-day current streak (best ever: ' + longest + ')',
+      'Consecutive days with zero bad habits logged'
+    ));
+
+    // --- Habit patterns, last 30 days ---
+    var windowKeys = last30DayKeys();
+    var hs = habitStats(windowKeys);
+    var habitsEl = document.getElementById('insightHabits');
+    habitsEl.innerHTML = '';
+
+    if(!state.habits.length || hs.denom < 3){
+      habitsEl.appendChild(Object.assign(document.createElement('div'), {
+        className: 'insight-empty',
+        textContent: 'Log a few more days to see habit-level patterns.'
+      }));
+      return;
+    }
+
+    var goods = hs.stats.filter(function(s){ return s.habit.type === 'good'; });
+    var bads = hs.stats.filter(function(s){ return s.habit.type === 'bad'; });
+
+    if(goods.length){
+      goods.sort(function(a,b){ return b.rate - a.rate; });
+      var best = goods[0];
+      habitsEl.appendChild(insightCard(
+        'Most consistent: "' + best.habit.name + '"',
+        Math.round(best.rate*100) + '% of your last ' + hs.denom + ' logged day(s)'
+      ));
+      var worst = goods[goods.length-1];
+      if(goods.length > 1 && worst.rate < best.rate){
+        habitsEl.appendChild(insightCard(
+          'Slipping: "' + worst.habit.name + '"',
+          'Only ' + Math.round(worst.rate*100) + '% of logged days — lowest of your good habits'
+        ));
+      }
+    }
+
+    if(bads.length){
+      bads.sort(function(a,b){ return b.rate - a.rate; });
+      var worstBad = bads[0];
+      if(worstBad.rate > 0){
+        habitsEl.appendChild(insightCard(
+          'Most frequent slip: "' + worstBad.habit.name + '"',
+          'Logged on ' + Math.round(worstBad.rate*100) + '% of your last ' + hs.denom + ' logged day(s)'
+        ));
+      }
+    }
+
+    var byPoints = hs.stats.slice().sort(function(a,b){ return b.totalPoints - a.totalPoints; });
+    var topContributor = byPoints[0];
+    var topDrag = byPoints[byPoints.length-1];
+    if(topContributor && topContributor.totalPoints > 0){
+      habitsEl.appendChild(insightCard(
+        'Biggest driver: "' + topContributor.habit.name + '"',
+        fmtScore(topContributor.totalPoints) + ' points over the last ' + hs.denom + ' logged day(s)'
+      ));
+    }
+    if(topDrag && topDrag.totalPoints < 0){
+      habitsEl.appendChild(insightCard(
+        'Biggest drag: "' + topDrag.habit.name + '"',
+        fmtScore(topDrag.totalPoints) + ' points over the last ' + hs.denom + ' logged day(s)'
+      ));
+    }
+  }
+
   function renderAll(){
     renderScores();
     renderToday();
     renderManage();
     renderHistory();
+    renderInsights();
   }
 
   // ----- Tabs -----
   var tabButtons = document.querySelectorAll('.tab-btn');
   var tabs = {
     today: document.getElementById('tab-today'),
+    insights: document.getElementById('tab-insights'),
     history: document.getElementById('tab-history'),
     manage: document.getElementById('tab-manage')
   };
@@ -1003,6 +1217,7 @@
       Object.keys(tabs).forEach(function(k){ tabs[k].style.display = 'none'; });
       tabs[btn.dataset.tab].style.display = 'block';
       if(btn.dataset.tab === 'history') renderHistory();
+      if(btn.dataset.tab === 'insights') renderInsights();
     });
   });
 
