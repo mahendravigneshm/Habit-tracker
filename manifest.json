@@ -1,6 +1,6 @@
 {
-  "name": "Ledger — Habit Score Tracker",
-  "short_name": "Ledger",
+  "name": "Habit Tracker",
+  "short_name": "Habit Tracker",
   "description": "Track good and bad habits with a weighted daily score, synced across devices via Google Drive.",
   "start_url": "./index.html",
   "scope": "./",

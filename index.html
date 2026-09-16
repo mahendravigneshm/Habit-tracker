@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Ledger — Habit Score Tracker</title>
+<title>Habit Tracker</title>
 
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#232321">
@@ -11,7 +11,7 @@
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Ledger">
+<meta name="apple-mobile-web-app-title" content="Habit Tracker">
 <style>
   :root{
     --bg:#f6f4ee;
@@ -152,6 +152,41 @@
   .value.pos{color:var(--good);}
   .value.neg{color:var(--bad);}
   .value.zero{color:var(--ink-soft);}
+  .score-box .breakdown{
+    font-size:0.7rem;
+    font-family:"SF Mono","Menlo",monospace;
+    color:var(--ink-soft);
+    margin-top:3px;
+  }
+  .score-box .breakdown .g{color:var(--good);}
+  .score-box .breakdown .b{color:var(--bad);}
+
+  .streak-banner{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    background:var(--card);
+    border:1px solid var(--line);
+    border-left:4px solid var(--line);
+    border-radius:var(--radius);
+    padding:10px 14px;
+    margin-bottom:22px;
+    font-size:0.85rem;
+    box-shadow:0 1px 2px var(--shadow);
+  }
+  .streak-banner.active{border-left-color:var(--good);}
+  .streak-banner .streak-num{
+    font-family:"SF Mono","Menlo",monospace;
+    font-weight:700;
+    color:var(--good);
+  }
+  .streak-banner.zero .streak-num{color:var(--ink-soft);}
+
+  .day-row .flag{
+    color:var(--bad);
+    margin-left:6px;
+    font-size:0.75rem;
+  }
 
   .habit-card{
     display:flex;
@@ -372,15 +407,22 @@
     <div class="score-box">
       <div class="label">TODAY</div>
       <div class="value" id="scoreToday">0</div>
+      <div class="breakdown" id="breakdownToday">+0 · -0</div>
     </div>
     <div class="score-box">
       <div class="label">THIS WEEK</div>
       <div class="value" id="scoreWeek">0</div>
+      <div class="breakdown" id="breakdownWeek">+0 · -0</div>
     </div>
     <div class="score-box">
       <div class="label">THIS MONTH</div>
       <div class="value" id="scoreMonth">0</div>
+      <div class="breakdown" id="breakdownMonth">+0 · -0</div>
     </div>
+  </div>
+
+  <div class="streak-banner zero" id="streakBanner">
+    <span id="streakText">No bad habits logged yet — start today to begin a clean streak.</span>
   </div>
 
   <div id="tab-today">
@@ -641,38 +683,77 @@
     return res;
   }
 
-  function dayScore(key){
+  // Returns { good, bad, net, badCount } for one day.
+  // good >= 0, bad <= 0 (bad is already negative), net = good + bad.
+  function dayBreakdown(key){
     var log = state.logs[key];
-    if(!log) return 0;
-    var total = 0;
+    if(!log) return { good:0, bad:0, net:0, badCount:0 };
+    var good = 0, bad = 0, badCount = 0;
     state.habits.forEach(function(h){
       if(log[h.id]){
-        total += (h.type === 'good' ? h.weight : -h.weight);
+        if(h.type === 'good'){ good += h.weight; }
+        else { bad -= h.weight; badCount++; }
       }
     });
-    return total;
+    return { good: good, bad: bad, net: good + bad, badCount: badCount };
   }
 
-  function weekScore(){
+  function dayScore(key){
+    return dayBreakdown(key).net;
+  }
+
+  function periodBreakdown(dateList){
+    var good = 0, bad = 0;
+    dateList.forEach(function(key){
+      var b = dayBreakdown(key);
+      good += b.good;
+      bad += b.bad;
+    });
+    return { good: good, bad: bad, net: good + bad };
+  }
+
+  function weekKeys(){
     var start = startOfWeek(new Date());
-    var total = 0;
+    var keys = [];
     for(var i=0;i<7;i++){
       var d = new Date(start);
       d.setDate(start.getDate()+i);
       if(d > new Date()) break;
-      total += dayScore(dateKey(d));
+      keys.push(dateKey(d));
     }
-    return total;
+    return keys;
   }
 
-  function monthScore(){
+  function monthKeys(){
     var now = new Date();
-    var total = 0;
+    var keys = [];
     for(var i=1;i<=now.getDate();i++){
-      var d = new Date(now.getFullYear(), now.getMonth(), i);
-      total += dayScore(dateKey(d));
+      keys.push(dateKey(new Date(now.getFullYear(), now.getMonth(), i)));
     }
-    return total;
+    return keys;
+  }
+
+  // Consecutive days, counting back from today, with zero bad-habit
+  // completions. Stops at the earliest date any habit was ever logged,
+  // so untracked history before that doesn't inflate the streak.
+  function earliestLogDate(){
+    var keys = Object.keys(state.logs).sort();
+    return keys.length ? keys[0] : null;
+  }
+
+  function cleanStreak(){
+    var earliest = earliestLogDate();
+    if(!earliest) return 0;
+    var streak = 0;
+    var d = new Date();
+    while(true){
+      var key = dateKey(d);
+      if(key < earliest) break;
+      if(dayBreakdown(key).badCount > 0) break;
+      streak++;
+      d.setDate(d.getDate() - 1);
+    }
+    return streak;
   }
 
   function fmtScore(n){
@@ -687,16 +768,43 @@
   }
 
   // ----- Rendering -----
+  function setBreakdown(elId, b){
+    document.getElementById(elId).innerHTML =
+      '<span class="g">+' + b.good + '</span> · <span class="b">' + b.bad + '</span>';
+  }
+
   function renderScores(){
-    var t = dayScore(todayKey());
-    var w = weekScore();
-    var m = monthScore();
+    var tb = dayBreakdown(todayKey());
+    var wb = periodBreakdown(weekKeys());
+    var mb = periodBreakdown(monthKeys());
+
     var elT = document.getElementById('scoreToday');
     var elW = document.getElementById('scoreWeek');
     var elM = document.getElementById('scoreMonth');
-    elT.textContent = fmtScore(t); elT.className = 'value ' + scoreClass(t);
-    elW.textContent = fmtScore(w); elW.className = 'value ' + scoreClass(w);
-    elM.textContent = fmtScore(m); elM.className = 'value ' + scoreClass(m);
+    elT.textContent = fmtScore(tb.net); elT.className = 'value ' + scoreClass(tb.net);
+    elW.textContent = fmtScore(wb.net); elW.className = 'value ' + scoreClass(wb.net);
+    elM.textContent = fmtScore(mb.net); elM.className = 'value ' + scoreClass(mb.net);
+
+    setBreakdown('breakdownToday', tb);
+    setBreakdown('breakdownWeek', wb);
+    setBreakdown('breakdownMonth', mb);
+
+    var streak = cleanStreak();
+    var banner = document.getElementById('streakBanner');
+    var text = document.getElementById('streakText');
+    if(streak > 0){
+      banner.className = 'streak-banner active';
+      text.innerHTML = '<span class="streak-num">' + streak + '-day</span> clean streak — no bad habits logged';
+    } else {
+      banner.className = 'streak-banner zero';
+      if(!earliestLogDate()){
+        text.textContent = 'No bad habits logged yet — start today to begin a clean streak.';
+      } else if(tb.badCount > 0){
+        text.textContent = 'Streak reset today — a bad habit was logged.';
+      } else {
+        text.textContent = 'No active streak — a bad habit was logged on a previous day.';
+      }
+    }
   }
 
   function renderToday(){
@@ -798,11 +906,12 @@
     }
     days.forEach(function(d){
       var key = dateKey(d);
-      var score = dayScore(key);
+      var b = dayBreakdown(key);
       var row = document.createElement('div');
       row.className = 'day-row';
       var label = d.toLocaleDateString(undefined, { weekday:'short', month:'short', day:'numeric' });
-      row.innerHTML = '<span class="d">'+label+'</span><span class="'+scoreClass(score)+'" style="color:var(--'+(score>0?'good':score<0?'bad':'ink-soft')+')">'+fmtScore(score)+'</span>';
+      var flag = b.badCount > 0 ? '<span class="flag" title="'+b.badCount+' bad habit(s) logged">●</span>' : '';
+      row.innerHTML = '<span class="d">'+label+flag+'</span><span style="color:var(--'+(b.net>0?'good':b.net<0?'bad':'ink-soft')+')">'+fmtScore(b.net)+'</span>';
       listEl.appendChild(row);
     });
 
