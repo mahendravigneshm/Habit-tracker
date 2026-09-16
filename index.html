@@ -1,0 +1,904 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ledger — Habit Score Tracker</title>
+<style>
+  :root{
+    --bg:#f6f4ee;
+    --bg-alt:#eeebe1;
+    --ink:#232323;
+    --ink-soft:#5b5850;
+    --line:#d8d3c4;
+    --grid:#e3ded0;
+    --good:#3f6b4f;
+    --good-bg:#e3ede4;
+    --bad:#a34a3c;
+    --bad-bg:#f3e2dd;
+    --accent:#c98a3c;
+    --card:#fffdf8;
+    --shadow:rgba(35,35,35,0.08);
+    --radius:4px;
+  }
+  :root:not([data-theme="light"]){
+    @media (prefers-color-scheme: dark){
+      --bg:#1c1b18;
+      --bg-alt:#242320;
+      --ink:#eee9dd;
+      --ink-soft:#a9a394;
+      --line:#3a382f;
+      --grid:#2c2a24;
+      --good:#8fbf9f;
+      --good-bg:#243128;
+      --bad:#d98f7f;
+      --bad-bg:#332321;
+      --accent:#d9a25c;
+      --card:#232219;
+      --shadow:rgba(0,0,0,0.35);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#1c1b18;
+    --bg-alt:#242320;
+    --ink:#eee9dd;
+    --ink-soft:#a9a394;
+    --line:#3a382f;
+    --grid:#2c2a24;
+    --good:#8fbf9f;
+    --good-bg:#243128;
+    --bad:#d98f7f;
+    --bad-bg:#332321;
+    --accent:#d9a25c;
+    --card:#232219;
+    --shadow:rgba(0,0,0,0.35);
+  }
+
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:
+      linear-gradient(var(--grid) 1px, transparent 1px) 0 0/100% 28px,
+      var(--bg);
+    color:var(--ink);
+    font-family: "Iowan Old Style","Georgia","Times New Roman",serif;
+    min-height:100vh;
+    padding:28px 16px 64px;
+  }
+  .wrap{max-width:720px;margin:0 auto;}
+
+  header{
+    display:flex;
+    justify-content:space-between;
+    align-items:baseline;
+    border-bottom:2px solid var(--ink);
+    padding-bottom:10px;
+    margin-bottom:18px;
+    flex-wrap:wrap;
+    gap:8px;
+  }
+  header h1{
+    font-size:1.5rem;
+    margin:0;
+    font-weight:600;
+    letter-spacing:0.01em;
+  }
+  header .date{
+    font-family:"SF Mono","Menlo",monospace;
+    font-size:0.85rem;
+    color:var(--ink-soft);
+  }
+
+  nav{
+    display:flex;
+    gap:2px;
+    margin-bottom:20px;
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    overflow:hidden;
+    background:var(--bg-alt);
+  }
+  nav button{
+    flex:1;
+    padding:10px 8px;
+    border:none;
+    background:transparent;
+    color:var(--ink-soft);
+    font-family:inherit;
+    font-size:0.9rem;
+    cursor:pointer;
+    border-right:1px solid var(--line);
+  }
+  nav button:last-child{border-right:none;}
+  nav button.active{
+    background:var(--card);
+    color:var(--ink);
+    font-weight:600;
+    box-shadow: inset 0 -2px 0 var(--accent);
+  }
+
+  .score-strip{
+    display:grid;
+    grid-template-columns:repeat(3,1fr);
+    gap:10px;
+    margin-bottom:22px;
+  }
+  .score-box{
+    background:var(--card);
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    padding:12px 14px;
+    box-shadow:0 1px 2px var(--shadow);
+  }
+  .score-box .label{
+    font-size:0.7rem;
+    color:var(--ink-soft);
+    font-family:"SF Mono","Menlo",monospace;
+  }
+  .score-box .value{
+    font-size:1.6rem;
+    font-family:"SF Mono","Menlo",monospace;
+    font-weight:700;
+    margin-top:2px;
+  }
+  .value.pos{color:var(--good);}
+  .value.neg{color:var(--bad);}
+  .value.zero{color:var(--ink-soft);}
+
+  .habit-card{
+    display:flex;
+    align-items:center;
+    gap:12px;
+    background:var(--card);
+    border:1px solid var(--line);
+    border-left:4px solid var(--line);
+    border-radius:var(--radius);
+    padding:12px 14px;
+    margin-bottom:10px;
+    box-shadow:0 1px 2px var(--shadow);
+    cursor:pointer;
+    transition:border-left-color 0.15s ease, background 0.15s ease;
+  }
+  .habit-card.good{border-left-color:var(--good);}
+  .habit-card.bad{border-left-color:var(--bad);}
+  .habit-card.done.good{background:var(--good-bg);}
+  .habit-card.done.bad{background:var(--bad-bg);}
+
+  .habit-check{
+    width:22px;height:22px;
+    border:2px solid var(--ink-soft);
+    border-radius:50%;
+    flex-shrink:0;
+    display:flex;align-items:center;justify-content:center;
+    font-size:0.8rem;
+    color:transparent;
+  }
+  .habit-card.done .habit-check{
+    color:var(--card);
+  }
+  .habit-card.done.good .habit-check{background:var(--good);border-color:var(--good);}
+  .habit-card.done.bad .habit-check{background:var(--bad);border-color:var(--bad);}
+
+  .habit-info{flex:1;min-width:0;}
+  .habit-name{font-size:1rem;}
+  .habit-meta{font-size:0.75rem;color:var(--ink-soft);font-family:"SF Mono","Menlo",monospace;margin-top:1px;}
+
+  .habit-points{
+    font-family:"SF Mono","Menlo",monospace;
+    font-weight:700;
+    font-size:1rem;
+    min-width:36px;
+    text-align:right;
+  }
+  .habit-points.good{color:var(--good);}
+  .habit-points.bad{color:var(--bad);}
+
+  .empty{
+    text-align:center;
+    color:var(--ink-soft);
+    padding:40px 12px;
+    font-style:italic;
+  }
+
+  .section-title{
+    font-size:0.75rem;
+    text-transform:none;
+    color:var(--ink-soft);
+    font-family:"SF Mono","Menlo",monospace;
+    margin:22px 0 8px;
+    padding-top:14px;
+    border-top:1px solid var(--line);
+  }
+  .section-title:first-child{border-top:none;padding-top:0;margin-top:0;}
+
+  /* Manage tab */
+  .form-row{
+    display:flex;
+    gap:8px;
+    margin-bottom:12px;
+    flex-wrap:wrap;
+  }
+  input[type="text"], select{
+    font-family:inherit;
+    font-size:0.95rem;
+    padding:9px 10px;
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    background:var(--card);
+    color:var(--ink);
+  }
+  input[type="text"]{flex:1;min-width:140px;}
+  select{background:var(--card);}
+  button.btn{
+    font-family:inherit;
+    font-size:0.9rem;
+    padding:9px 16px;
+    border:1px solid var(--ink);
+    background:var(--ink);
+    color:var(--bg);
+    border-radius:var(--radius);
+    cursor:pointer;
+  }
+  button.btn.secondary{
+    background:transparent;
+    color:var(--ink);
+  }
+  button.btn.danger{
+    background:transparent;
+    border-color:var(--bad);
+    color:var(--bad);
+    padding:6px 10px;
+    font-size:0.8rem;
+  }
+  .type-toggle{
+    display:flex;
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    overflow:hidden;
+  }
+  .type-toggle button{
+    padding:9px 14px;
+    border:none;
+    background:var(--card);
+    color:var(--ink-soft);
+    font-family:inherit;
+    cursor:pointer;
+    border-right:1px solid var(--line);
+  }
+  .type-toggle button:last-child{border-right:none;}
+  .type-toggle button.sel-good.active{background:var(--good-bg);color:var(--good);font-weight:700;}
+  .type-toggle button.sel-bad.active{background:var(--bad-bg);color:var(--bad);font-weight:700;}
+
+  .manage-row{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    background:var(--card);
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    padding:10px 12px;
+    margin-bottom:8px;
+  }
+  .manage-row .habit-name{flex:1;}
+  .weight-select{width:64px;}
+
+  /* History tab */
+  .day-row{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    padding:9px 4px;
+    border-bottom:1px solid var(--grid);
+    font-family:"SF Mono","Menlo",monospace;
+    font-size:0.85rem;
+  }
+  .day-row .d{color:var(--ink-soft);}
+  .bar-wrap{
+    background:var(--card);
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    padding:14px;
+    margin-bottom:16px;
+  }
+  .bar-wrap h3{margin:0 0 10px;font-size:0.85rem;color:var(--ink-soft);font-weight:600;font-family:"SF Mono","Menlo",monospace;}
+  svg text{font-family:"SF Mono","Menlo",monospace;}
+
+  footer{
+    text-align:center;
+    color:var(--ink-soft);
+    font-size:0.75rem;
+    margin-top:36px;
+  }
+
+  .auth-bar{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    background:var(--bg-alt);
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    padding:9px 12px;
+    margin-bottom:16px;
+    font-size:0.82rem;
+  }
+  .auth-bar .status{
+    color:var(--ink-soft);
+    font-family:"SF Mono","Menlo",monospace;
+    display:flex;
+    align-items:center;
+    gap:6px;
+  }
+  .dot{
+    width:7px;height:7px;border-radius:50%;
+    background:var(--ink-soft);
+    flex-shrink:0;
+  }
+  .dot.synced{background:var(--good);}
+  .dot.local{background:var(--accent);}
+  button.btn.small{
+    padding:6px 12px;
+    font-size:0.8rem;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Ledger</h1>
+    <div class="date" id="todayLabel"></div>
+  </header>
+
+  <div class="auth-bar">
+    <div class="status" id="authStatus"><span class="dot local" id="authDot"></span><span id="authLabel">Not signed in — saving to this device only</span></div>
+    <button class="btn small" id="authBtn">Sign in with Google</button>
+  </div>
+
+  <nav>
+    <button class="tab-btn active" data-tab="today">Today</button>
+    <button class="tab-btn" data-tab="history">History</button>
+    <button class="tab-btn" data-tab="manage">Habits</button>
+  </nav>
+
+  <div class="score-strip">
+    <div class="score-box">
+      <div class="label">TODAY</div>
+      <div class="value" id="scoreToday">0</div>
+    </div>
+    <div class="score-box">
+      <div class="label">THIS WEEK</div>
+      <div class="value" id="scoreWeek">0</div>
+    </div>
+    <div class="score-box">
+      <div class="label">THIS MONTH</div>
+      <div class="value" id="scoreMonth">0</div>
+    </div>
+  </div>
+
+  <div id="tab-today">
+    <div class="section-title">GOOD HABITS</div>
+    <div id="goodList"></div>
+    <div class="section-title">HABITS TO AVOID</div>
+    <div id="badList"></div>
+    <div id="todayEmpty" class="empty" style="display:none;">No habits set up yet. Go to the Habits tab to add some.</div>
+  </div>
+
+  <div id="tab-history" style="display:none;">
+    <div class="bar-wrap">
+      <h3>LAST 14 DAYS</h3>
+      <svg id="chart14" viewBox="0 0 680 160" width="100%" height="160"></svg>
+    </div>
+    <div class="section-title">DAY-BY-DAY</div>
+    <div id="historyList"></div>
+  </div>
+
+  <div id="tab-manage" style="display:none;">
+    <div class="section-title">ADD A HABIT</div>
+    <div class="form-row">
+      <input type="text" id="newHabitName" placeholder="Habit name, e.g. Read 20 minutes">
+    </div>
+    <div class="form-row">
+      <div class="type-toggle" id="typeToggle">
+        <button type="button" class="sel-good active" data-type="good">Good</button>
+        <button type="button" class="sel-bad" data-type="bad">Bad</button>
+      </div>
+      <select id="newHabitWeight">
+        <option value="1">Weight 1</option>
+        <option value="2">Weight 2</option>
+        <option value="3" selected>Weight 3</option>
+        <option value="4">Weight 4</option>
+        <option value="5">Weight 5</option>
+      </select>
+      <button class="btn" id="addHabitBtn">Add</button>
+    </div>
+
+    <div class="section-title">YOUR HABITS</div>
+    <div id="manageList"></div>
+    <div id="manageEmpty" class="empty" style="display:none;">Nothing here yet — add your first habit above.</div>
+  </div>
+
+  <footer>Stored only in this browser, on this device.</footer>
+</div>
+
+
+<!--
+  ============================================================
+  CLOUD SYNC SETUP — fill this in before hosting the file.
+  Uses your own Google Drive (hidden app-data folder) to store
+  one small JSON file with your habits and daily log.
+  See the setup guide for how to get a Client ID.
+  ============================================================
+-->
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+
+<script>
+  var CLIENT_ID = "675210107800-1l6br10a0ik7egvl5thv0cle8g04qa7k.apps.googleusercontent.com";
+</script>
+
+<script>
+(function(){
+  var STORAGE_KEY = 'ledger_habit_tracker_v1';
+  var DRIVE_FILENAME = 'ledger-habit-tracker-data.json';
+  var SCOPES = 'https://www.googleapis.com/auth/drive.appdata openid email profile';
+
+  var cloudEnabled = CLIENT_ID.indexOf('YOUR_CLIENT_ID') !== 0;
+  var tokenClient = null;
+  var accessToken = null;
+  var driveFileId = null;
+  var currentUser = null; // email string once signed in
+  var suppressCloudWrite = false;
+
+  function loadLocalState(){
+    try{
+      var raw = localStorage.getItem(STORAGE_KEY);
+      if(!raw) return { habits: [], logs: {} };
+      var parsed = JSON.parse(raw);
+      if(!parsed.habits) parsed.habits = [];
+      if(!parsed.logs) parsed.logs = {};
+      return parsed;
+    }catch(e){
+      console.error('Failed to load state', e);
+      return { habits: [], logs: {} };
+    }
+  }
+
+  function saveState(){
+    try{
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    }catch(e){
+      console.error('Failed to save local state', e);
+    }
+    if(cloudEnabled && accessToken && !suppressCloudWrite){
+      saveToDrive();
+    }
+  }
+
+  function setAuthStatus(kind, label){
+    document.getElementById('authDot').className = 'dot ' + kind;
+    document.getElementById('authLabel').textContent = label;
+  }
+
+  function updateAuthButton(){
+    var btn = document.getElementById('authBtn');
+    btn.textContent = currentUser ? ('Sign out (' + currentUser + ')') : 'Sign in with Google';
+  }
+
+  function driveFetch(url, options){
+    options = options || {};
+    options.headers = options.headers || {};
+    options.headers['Authorization'] = 'Bearer ' + accessToken;
+    return fetch(url, options).then(function(res){
+      if(res.status === 401){
+        throw new Error('unauthorized');
+      }
+      return res;
+    });
+  }
+
+  function findDriveFile(){
+    var q = encodeURIComponent("name='" + DRIVE_FILENAME + "'");
+    return driveFetch('https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=' + q + '&fields=files(id,name)')
+      .then(function(res){ return res.json(); })
+      .then(function(data){
+        return (data.files && data.files.length) ? data.files[0].id : null;
+      });
+  }
+
+  function loadFromDrive(){
+    setAuthStatus('local', 'Syncing…');
+    return findDriveFile().then(function(id){
+      driveFileId = id;
+      if(driveFileId){
+        return driveFetch('https://www.googleapis.com/drive/v3/files/' + driveFileId + '?alt=media')
+          .then(function(res){ return res.text(); })
+          .then(function(text){
+            var data = text ? JSON.parse(text) : { habits: [], logs: {} };
+            suppressCloudWrite = true;
+            state = { habits: data.habits || [], logs: data.logs || {} };
+            suppressCloudWrite = false;
+          });
+      } else {
+        // No file yet on Drive — seed it with whatever is on this device.
+        return saveToDrive();
+      }
+    }).then(function(){
+      renderAll();
+      setAuthStatus('synced', 'Synced with Google Drive' + (currentUser ? ' — ' + currentUser : ''));
+    }).catch(function(err){
+      console.error('Drive load failed', err);
+      setAuthStatus('local', 'Could not reach Drive — using local copy');
+    });
+  }
+
+  function saveToDrive(){
+    var body = JSON.stringify({ habits: state.habits, logs: state.logs, updatedAt: Date.now() });
+    var chain = driveFileId ? Promise.resolve(driveFileId) : findDriveFile();
+    return chain.then(function(id){
+      if(id){
+        driveFileId = id;
+        return driveFetch('https://www.googleapis.com/upload/drive/v3/files/' + id + '?uploadType=media', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: body
+        });
+      } else {
+        var metadata = { name: DRIVE_FILENAME, parents: ['appDataFolder'] };
+        var form = new FormData();
+        form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+        form.append('file', new Blob([body], { type: 'application/json' }));
+        return driveFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', {
+          method: 'POST',
+          body: form
+        }).then(function(res){ return res.json(); })
+          .then(function(data){ driveFileId = data.id; });
+      }
+    }).then(function(){
+      setAuthStatus('synced', 'Synced with Google Drive' + (currentUser ? ' — ' + currentUser : ''));
+    }).catch(function(err){
+      console.error('Drive save failed', err);
+      if(err.message === 'unauthorized'){
+        setAuthStatus('local', 'Session expired — sign in again to keep syncing');
+        currentUser = null; accessToken = null; updateAuthButton();
+      } else {
+        setAuthStatus('local', 'Sync failed — changes saved on this device only');
+      }
+    });
+  }
+
+  function fetchUserEmail(){
+    return driveFetch('https://www.googleapis.com/oauth2/v3/userinfo')
+      .then(function(res){ return res.json(); })
+      .then(function(data){ return data.email || null; })
+      .catch(function(){ return null; });
+  }
+
+  function initAuth(){
+    if(!cloudEnabled){
+      setAuthStatus('local', 'Cloud sync not configured — saving to this device only');
+      document.getElementById('authBtn').style.display = 'none';
+      return;
+    }
+    tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: CLIENT_ID,
+      scope: SCOPES,
+      callback: function(resp){
+        if(resp.error){
+          setAuthStatus('local', 'Sign-in failed — try again');
+          return;
+        }
+        accessToken = resp.access_token;
+        fetchUserEmail().then(function(email){
+          currentUser = email || 'signed in';
+          updateAuthButton();
+          loadFromDrive();
+        });
+      }
+    });
+
+    document.getElementById('authBtn').addEventListener('click', function(){
+      if(currentUser){
+        if(accessToken){
+          google.accounts.oauth2.revoke(accessToken, function(){});
+        }
+        accessToken = null;
+        currentUser = null;
+        driveFileId = null;
+        updateAuthButton();
+        state = loadLocalState();
+        renderAll();
+        setAuthStatus('local', 'Not signed in — saving to this device only');
+      } else {
+        tokenClient.requestAccessToken();
+      }
+    });
+  }
+
+  var state = loadLocalState();
+
+  function pad(n){ return n < 10 ? '0'+n : ''+n; }
+  function dateKey(d){ return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); }
+  function todayKey(){ return dateKey(new Date()); }
+
+  function startOfWeek(d){
+    var day = d.getDay(); // 0 Sun
+    var diff = (day === 0 ? -6 : 1) - day; // Monday as start
+    var res = new Date(d);
+    res.setDate(d.getDate() + diff);
+    res.setHours(0,0,0,0);
+    return res;
+  }
+
+  function dayScore(key){
+    var log = state.logs[key];
+    if(!log) return 0;
+    var total = 0;
+    state.habits.forEach(function(h){
+      if(log[h.id]){
+        total += (h.type === 'good' ? h.weight : -h.weight);
+      }
+    });
+    return total;
+  }
+
+  function weekScore(){
+    var start = startOfWeek(new Date());
+    var total = 0;
+    for(var i=0;i<7;i++){
+      var d = new Date(start);
+      d.setDate(start.getDate()+i);
+      if(d > new Date()) break;
+      total += dayScore(dateKey(d));
+    }
+    return total;
+  }
+
+  function monthScore(){
+    var now = new Date();
+    var total = 0;
+    for(var i=1;i<=now.getDate();i++){
+      var d = new Date(now.getFullYear(), now.getMonth(), i);
+      total += dayScore(dateKey(d));
+    }
+    return total;
+  }
+
+  function fmtScore(n){
+    return (n > 0 ? '+' : '') + n;
+  }
+  function scoreClass(n){
+    return n > 0 ? 'pos' : (n < 0 ? 'neg' : 'zero');
+  }
+
+  function uid(){
+    return 'h_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,7);
+  }
+
+  // ----- Rendering -----
+  function renderScores(){
+    var t = dayScore(todayKey());
+    var w = weekScore();
+    var m = monthScore();
+    var elT = document.getElementById('scoreToday');
+    var elW = document.getElementById('scoreWeek');
+    var elM = document.getElementById('scoreMonth');
+    elT.textContent = fmtScore(t); elT.className = 'value ' + scoreClass(t);
+    elW.textContent = fmtScore(w); elW.className = 'value ' + scoreClass(w);
+    elM.textContent = fmtScore(m); elM.className = 'value ' + scoreClass(m);
+  }
+
+  function renderToday(){
+    var key = todayKey();
+    var log = state.logs[key] || {};
+    var goodEl = document.getElementById('goodList');
+    var badEl = document.getElementById('badList');
+    goodEl.innerHTML = '';
+    badEl.innerHTML = '';
+
+    var goods = state.habits.filter(function(h){ return h.type === 'good'; });
+    var bads = state.habits.filter(function(h){ return h.type === 'bad'; });
+
+    function card(h){
+      var done = !!log[h.id];
+      var div = document.createElement('div');
+      div.className = 'habit-card ' + h.type + (done ? ' done' : '');
+      div.innerHTML =
+        '<div class="habit-check">' + (done ? '✓' : '') + '</div>' +
+        '<div class="habit-info">' +
+          '<div class="habit-name">'+escapeHtml(h.name)+'</div>' +
+          '<div class="habit-meta">weight '+h.weight+'</div>' +
+        '</div>' +
+        '<div class="habit-points '+h.type+'">' + (h.type==='good' ? '+':'-') + h.weight + '</div>';
+      div.addEventListener('click', function(){
+        var log = state.logs[key] || (state.logs[key] = {});
+        log[h.id] = !log[h.id];
+        saveState();
+        renderScores();
+        renderToday();
+        renderHistory();
+      });
+      return div;
+    }
+
+    goods.forEach(function(h){ goodEl.appendChild(card(h)); });
+    bads.forEach(function(h){ badEl.appendChild(card(h)); });
+
+    document.getElementById('todayEmpty').style.display = state.habits.length ? 'none' : 'block';
+    document.querySelector('.section-title').style.display = goods.length || !state.habits.length ? 'block' : 'none';
+  }
+
+  function escapeHtml(s){
+    return s.replace(/[&<>"']/g, function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+
+  function renderManage(){
+    var listEl = document.getElementById('manageList');
+    listEl.innerHTML = '';
+    state.habits.forEach(function(h){
+      var row = document.createElement('div');
+      row.className = 'manage-row';
+      row.innerHTML =
+        '<div class="habit-points '+h.type+'" style="min-width:20px;">' + (h.type==='good'?'+':'-') + '</div>' +
+        '<div class="habit-name">'+escapeHtml(h.name)+'</div>';
+
+      var weightSel = document.createElement('select');
+      weightSel.className = 'weight-select';
+      [1,2,3,4,5].forEach(function(v){
+        var opt = document.createElement('option');
+        opt.value = v; opt.textContent = v;
+        if(v === h.weight) opt.selected = true;
+        weightSel.appendChild(opt);
+      });
+      weightSel.addEventListener('change', function(){
+        h.weight = parseInt(weightSel.value, 10);
+        saveState();
+        renderScores();
+        renderToday();
+      });
+      row.appendChild(weightSel);
+
+      var delBtn = document.createElement('button');
+      delBtn.className = 'btn danger';
+      delBtn.textContent = 'Remove';
+      delBtn.addEventListener('click', function(){
+        state.habits = state.habits.filter(function(x){ return x.id !== h.id; });
+        saveState();
+        renderAll();
+      });
+      row.appendChild(delBtn);
+
+      listEl.appendChild(row);
+    });
+    document.getElementById('manageEmpty').style.display = state.habits.length ? 'none' : 'block';
+  }
+
+  function renderHistory(){
+    var listEl = document.getElementById('historyList');
+    listEl.innerHTML = '';
+    var days = [];
+    var now = new Date();
+    for(var i=0;i<14;i++){
+      var d = new Date(now);
+      d.setDate(now.getDate() - i);
+      days.push(d);
+    }
+    days.forEach(function(d){
+      var key = dateKey(d);
+      var score = dayScore(key);
+      var row = document.createElement('div');
+      row.className = 'day-row';
+      var label = d.toLocaleDateString(undefined, { weekday:'short', month:'short', day:'numeric' });
+      row.innerHTML = '<span class="d">'+label+'</span><span class="'+scoreClass(score)+'" style="color:var(--'+(score>0?'good':score<0?'bad':'ink-soft')+')">'+fmtScore(score)+'</span>';
+      listEl.appendChild(row);
+    });
+
+    drawChart(days.slice().reverse());
+  }
+
+  function drawChart(days){
+    var svg = document.getElementById('chart14');
+    svg.innerHTML = '';
+    var scores = days.map(function(d){ return dayScore(dateKey(d)); });
+    var maxAbs = Math.max(1, Math.max.apply(null, scores.map(Math.abs)));
+    var w = 680, h = 160;
+    var zeroY = h/2;
+    var barW = (w - 20) / days.length;
+    var ns = 'http://www.w3.org/2000/svg';
+
+    var zeroLine = document.createElementNS(ns,'line');
+    zeroLine.setAttribute('x1', 10); zeroLine.setAttribute('x2', w-10);
+    zeroLine.setAttribute('y1', zeroY); zeroLine.setAttribute('y2', zeroY);
+    zeroLine.setAttribute('stroke', 'var(--line)');
+    zeroLine.setAttribute('stroke-width', '1');
+    svg.appendChild(zeroLine);
+
+    days.forEach(function(d, i){
+      var score = scores[i];
+      var barMaxH = (h/2) - 20;
+      var barH = Math.abs(score) / maxAbs * barMaxH;
+      var x = 10 + i * barW + barW*0.2;
+      var bw = barW*0.6;
+      var y = score >= 0 ? zeroY - barH : zeroY;
+      var rect = document.createElementNS(ns,'rect');
+      rect.setAttribute('x', x);
+      rect.setAttribute('y', y);
+      rect.setAttribute('width', bw);
+      rect.setAttribute('height', Math.max(barH,1));
+      rect.setAttribute('fill', score > 0 ? 'var(--good)' : (score < 0 ? 'var(--bad)' : 'var(--line)'));
+      rect.setAttribute('rx', '2');
+      svg.appendChild(rect);
+
+      if(i % 2 === 0 || days.length <= 7){
+        var text = document.createElementNS(ns,'text');
+        text.setAttribute('x', x + bw/2);
+        text.setAttribute('y', h - 4);
+        text.setAttribute('text-anchor','middle');
+        text.setAttribute('font-size','9');
+        text.setAttribute('fill','var(--ink-soft)');
+        text.textContent = d.getDate();
+        svg.appendChild(text);
+      }
+    });
+  }
+
+  function renderAll(){
+    renderScores();
+    renderToday();
+    renderManage();
+    renderHistory();
+  }
+
+  // ----- Tabs -----
+  var tabButtons = document.querySelectorAll('.tab-btn');
+  var tabs = {
+    today: document.getElementById('tab-today'),
+    history: document.getElementById('tab-history'),
+    manage: document.getElementById('tab-manage')
+  };
+  tabButtons.forEach(function(btn){
+    btn.addEventListener('click', function(){
+      tabButtons.forEach(function(b){ b.classList.remove('active'); });
+      btn.classList.add('active');
+      Object.keys(tabs).forEach(function(k){ tabs[k].style.display = 'none'; });
+      tabs[btn.dataset.tab].style.display = 'block';
+      if(btn.dataset.tab === 'history') renderHistory();
+    });
+  });
+
+  // ----- Add habit form -----
+  var selectedType = 'good';
+  document.getElementById('typeToggle').addEventListener('click', function(e){
+    var btn = e.target.closest('button');
+    if(!btn) return;
+    selectedType = btn.dataset.type;
+    document.querySelectorAll('#typeToggle button').forEach(function(b){ b.classList.remove('active'); });
+    btn.classList.add('active');
+  });
+
+  document.getElementById('addHabitBtn').addEventListener('click', function(){
+    var nameInput = document.getElementById('newHabitName');
+    var name = nameInput.value.trim();
+    if(!name) return;
+    var weight = parseInt(document.getElementById('newHabitWeight').value, 10);
+    state.habits.push({ id: uid(), name: name, type: selectedType, weight: weight });
+    saveState();
+    nameInput.value = '';
+    renderAll();
+  });
+
+  document.getElementById('newHabitName').addEventListener('keydown', function(e){
+    if(e.key === 'Enter') document.getElementById('addHabitBtn').click();
+  });
+
+  // ----- Header date -----
+  document.getElementById('todayLabel').textContent = new Date().toLocaleDateString(undefined, {
+    weekday:'long', month:'long', day:'numeric', year:'numeric'
+  });
+
+  renderAll();
+  initAuth();
+})();
+</script>
+</body>
+</html>
