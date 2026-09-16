@@ -633,12 +633,23 @@
       document.getElementById('authBtn').disabled = true;
       return;
     }
+
+    var silentAttemptInFlight = false;
+
     tokenClient = google.accounts.oauth2.initTokenClient({
       client_id: CLIENT_ID,
       scope: SCOPES,
       callback: function(resp){
+        var wasSilent = silentAttemptInFlight;
+        silentAttemptInFlight = false;
+
         if(resp.error){
-          setAuthStatus('local', 'Sign-in failed — try again');
+          if(wasSilent){
+            // No existing Google session / consent yet — needs one manual tap.
+            setAuthStatus('local', 'Not signed in — tap to sign in with Google');
+          } else {
+            setAuthStatus('local', 'Sign-in failed — try again');
+          }
           return;
         }
         accessToken = resp.access_token;
@@ -663,9 +674,16 @@
         renderAll();
         setAuthStatus('local', 'Not signed in — saving to this device only');
       } else {
-        tokenClient.requestAccessToken();
+        tokenClient.requestAccessToken({ prompt: 'consent' });
       }
     });
+
+    // Try to reconnect automatically on open — this only succeeds silently
+    // if you're already logged into Google in this browser and have signed
+    // in here before. Otherwise it fails quietly and the button stays put.
+    setAuthStatus('local', 'Checking Google sign-in…');
+    silentAttemptInFlight = true;
+    tokenClient.requestAccessToken({ prompt: '' });
   }
 
   var state = loadLocalState();
