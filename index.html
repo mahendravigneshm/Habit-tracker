@@ -191,11 +191,14 @@
   .insight-card{
     background:var(--card);
     border:1px solid var(--line);
+    border-left:4px solid var(--line);
     border-radius:var(--radius);
     padding:13px 14px;
     margin-bottom:10px;
     box-shadow:0 1px 2px var(--shadow);
   }
+  .insight-card.streak-good{ border-left-color:var(--good); }
+  .insight-card.streak-bad{ border-left-color:var(--bad); }
   .insight-card .headline{
     font-size:1rem;
     margin-bottom:3px;
@@ -210,6 +213,49 @@
     font-style:italic;
     font-size:0.88rem;
     padding:4px 2px 14px;
+  }
+
+  .lock-overlay{
+    position:fixed;
+    inset:0;
+    background:var(--bg);
+    z-index:1000;
+    display:none;
+    align-items:center;
+    justify-content:center;
+    padding:20px;
+  }
+  .lock-box{
+    background:var(--card);
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    padding:28px 24px;
+    max-width:320px;
+    width:100%;
+    text-align:center;
+    box-shadow:0 4px 16px var(--shadow);
+  }
+  .lock-icon{ font-size:2rem; margin-bottom:6px; }
+  .lock-box h2{ margin:0 0 4px; font-size:1.2rem; }
+  .lock-sub{ color:var(--ink-soft); font-size:0.85rem; margin:0 0 16px; }
+  .pin-input{
+    width:100%;
+    font-family:"SF Mono","Menlo",monospace;
+    font-size:1.3rem;
+    letter-spacing:0.4em;
+    text-align:center;
+    padding:10px;
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    background:var(--bg);
+    color:var(--ink);
+    margin-bottom:8px;
+    box-sizing:border-box;
+  }
+  .lock-error{
+    color:var(--bad);
+    font-size:0.8rem;
+    margin-bottom:6px;
   }
 
   .habit-card{
@@ -410,6 +456,21 @@
 </style>
 </head>
 <body>
+
+<div class="lock-overlay" id="lockOverlay" style="display:none;">
+  <div class="lock-box">
+    <div class="lock-icon">🔒</div>
+    <h2 id="lockTitle">Enter PIN</h2>
+    <p class="lock-sub" id="lockSub">This device is locked.</p>
+    <input type="password" inputmode="numeric" pattern="[0-9]*" id="pinField1" class="pin-input" maxlength="8" autocomplete="off" placeholder="PIN">
+    <input type="password" inputmode="numeric" pattern="[0-9]*" id="pinField2" class="pin-input" maxlength="8" autocomplete="off" placeholder="Confirm PIN" style="display:none;">
+    <div class="lock-error" id="lockError" style="display:none;"></div>
+    <button class="btn" id="lockSubmitBtn" style="width:100%;">Unlock</button>
+    <button class="btn secondary" id="lockCancelBtn" style="width:100%;margin-top:8px;display:none;">Cancel</button>
+    <button class="btn secondary" id="lockForgotBtn" style="width:100%;margin-top:8px;">Forgot PIN?</button>
+  </div>
+</div>
+
 <div class="wrap">
   <header>
     <h1>Habit Tracker</h1>
@@ -459,6 +520,10 @@
   </div>
 
   <div id="tab-insights" style="display:none;">
+    <div class="section-title">STREAK WATCH</div>
+    <p style="font-size:0.78rem;color:var(--ink-soft);margin:-4px 0 10px;">General associations for habits like these — not medical advice or a diagnosis.</p>
+    <div id="streakWatch"></div>
+
     <div class="section-title">WEEK OVER WEEK</div>
     <div id="insightTrend"></div>
 
@@ -501,6 +566,14 @@
     <div class="section-title">YOUR HABITS</div>
     <div id="manageList"></div>
     <div id="manageEmpty" class="empty" style="display:none;">Nothing here yet — add your first habit above.</div>
+
+    <div id="archivedSection" style="display:none;">
+      <div class="section-title">ARCHIVED (history kept, no longer logged)</div>
+      <div id="archivedList"></div>
+    </div>
+
+    <div class="section-title">PRIVACY &amp; SECURITY</div>
+    <div id="pinStatus"></div>
   </div>
 
   <footer>Stored only in this browser, on this device.</footer>
@@ -534,29 +607,110 @@
   var currentUser = null; // email string once signed in
   var suppressCloudWrite = false;
 
-  function loadLocalState(){
+  // ===== Encryption (PIN-derived AES-GCM) =====
+  var pinEnabled = false;   // true once a PIN has been set and data is stored encrypted
+  var pinLocked = false;    // true while the correct PIN hasn't been entered yet this session
+  var sessionPin = null;    // raw PIN, kept in memory only for this session — never persisted
+  var currentSalt = null;   // the salt tied to sessionPin's derived key
+  var keyCache = {};        // saltB64 -> Promise<CryptoKey>, avoids re-running PBKDF2 needlessly
+  var pinSupported = !!(window.crypto && window.crypto.subtle && window.crypto.getRandomValues);
+
+  function bufToBase64(buf){
+    var bytes = new Uint8Array(buf);
+    var binary = '';
+    for(var i=0;i<bytes.byteLength;i++){ binary += String.fromCharCode(bytes[i]); }
+    return btoa(binary);
+  }
+  function base64ToBuf(b64){
+    var binary = atob(b64);
+    var bytes = new Uint8Array(binary.length);
+    for(var i=0;i<binary.length;i++){ bytes[i] = binary.charCodeAt(i); }
+    return bytes.buffer;
+  }
+  function randomSaltB64(){
+    return bufToBase64(crypto.getRandomValues(new Uint8Array(16)).buffer);
+  }
+  function deriveKey(pin, saltB64){
+    var enc = new TextEncoder();
+    var salt = new Uint8Array(base64ToBuf(saltB64));
+    return crypto.subtle.importKey('raw', enc.encode(pin), 'PBKDF2', false, ['deriveKey'])
+      .then(function(baseKey){
+        return crypto.subtle.deriveKey(
+          { name: 'PBKDF2', salt: salt, iterations: 150000, hash: 'SHA-256' },
+          baseKey,
+          { name: 'AES-GCM', length: 256 },
+          false,
+          ['encrypt', 'decrypt']
+        );
+      });
+  }
+  function getKeyForSalt(saltB64){
+    if(!keyCache[saltB64]){
+      keyCache[saltB64] = deriveKey(sessionPin, saltB64);
+    }
+    return keyCache[saltB64];
+  }
+  function encryptJSON(obj, key){
+    var enc = new TextEncoder();
+    var iv = crypto.getRandomValues(new Uint8Array(12));
+    return crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, enc.encode(JSON.stringify(obj)))
+      .then(function(cipherBuf){
+        return { iv: bufToBase64(iv.buffer), data: bufToBase64(cipherBuf) };
+      });
+  }
+  function decryptJSON(payload, key){
+    var iv = new Uint8Array(base64ToBuf(payload.iv));
+    var dataBuf = base64ToBuf(payload.data);
+    return crypto.subtle.decrypt({ name: 'AES-GCM', iv: iv }, key, dataBuf)
+      .then(function(plainBuf){
+        return JSON.parse(new TextDecoder().decode(plainBuf));
+      });
+  }
+
+  // Builds whatever should actually be written to localStorage / Drive:
+  // encrypted {encrypted:true, salt, iv, data} if a PIN is set, otherwise
+  // plain {habits, logs}.
+  function buildPersistedPayload(){
+    if(!pinEnabled){
+      return Promise.resolve({ habits: state.habits, logs: state.logs });
+    }
+    return getKeyForSalt(currentSalt).then(function(key){
+      return encryptJSON({ habits: state.habits, logs: state.logs }, key).then(function(enc){
+        return { encrypted: true, salt: currentSalt, iv: enc.iv, data: enc.data };
+      });
+    });
+  }
+
+  function readRawLocal(){
     try{
       var raw = localStorage.getItem(STORAGE_KEY);
-      if(!raw) return { habits: [], logs: {} };
-      var parsed = JSON.parse(raw);
-      if(!parsed.habits) parsed.habits = [];
-      if(!parsed.logs) parsed.logs = {};
-      return parsed;
+      return raw ? JSON.parse(raw) : null;
     }catch(e){
-      console.error('Failed to load state', e);
-      return { habits: [], logs: {} };
+      console.error('Failed to read local state', e);
+      return null;
     }
   }
 
+  function loadLocalState(){
+    var raw = readRawLocal();
+    if(!raw) return { habits: [], logs: {} };
+    if(raw.encrypted) return { habits: [], logs: {} }; // caller handles unlocking separately
+    return { habits: raw.habits || [], logs: raw.logs || {} };
+  }
+
   function saveState(){
-    try{
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    }catch(e){
-      console.error('Failed to save local state', e);
-    }
-    if(cloudEnabled && accessToken && !suppressCloudWrite){
-      saveToDrive();
-    }
+    buildPersistedPayload().then(function(payloadObj){
+      try{
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(payloadObj));
+      }catch(e){
+        console.error('Failed to save local state', e);
+      }
+      if(cloudEnabled && accessToken && !suppressCloudWrite){
+        saveToDrive();
+      }
+    }).catch(function(e){
+      console.error('Failed to encrypt state for saving', e);
+    });
   }
 
   function setAuthStatus(kind, label){
@@ -598,10 +752,42 @@
         return driveFetch('https://www.googleapis.com/drive/v3/files/' + driveFileId + '?alt=media')
           .then(function(res){ return res.text(); })
           .then(function(text){
-            var data = text ? JSON.parse(text) : { habits: [], logs: {} };
+            var content = text ? JSON.parse(text) : { habits: [], logs: {} };
+
+            if(content.encrypted){
+              if(sessionPin){
+                return getKeyForSalt(content.salt).then(function(key){
+                  return decryptJSON(content, key);
+                }).then(function(decrypted){
+                  suppressCloudWrite = true;
+                  currentSalt = content.salt;
+                  pinEnabled = true;
+                  state = { habits: decrypted.habits || [], logs: decrypted.logs || {} };
+                  suppressCloudWrite = false;
+                }).catch(function(){
+                  throw new Error('drive-decrypt-failed');
+                });
+              }
+              // No PIN unlocked locally yet (e.g. a fresh device) — ask for it,
+              // using this payload's own embedded salt.
+              return promptPinForDrivePayload(content).then(function(decrypted){
+                suppressCloudWrite = true;
+                currentSalt = content.salt;
+                pinEnabled = true;
+                state = { habits: decrypted.habits || [], logs: decrypted.logs || {} };
+                suppressCloudWrite = false;
+                try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(content)); }catch(e){}
+              });
+            }
+
+            // Plaintext on Drive.
             suppressCloudWrite = true;
-            state = { habits: data.habits || [], logs: data.logs || {} };
+            state = { habits: content.habits || [], logs: content.logs || {} };
             suppressCloudWrite = false;
+            if(pinEnabled){
+              // This device has encryption on but Drive doesn't yet — bring it up to date.
+              return saveToDrive();
+            }
           });
       } else {
         // No file yet on Drive — seed it with whatever is on this device.
@@ -612,37 +798,46 @@
       setAuthStatus('synced', 'Synced with Google Drive' + (currentUser ? ' — ' + currentUser : ''));
     }).catch(function(err){
       console.error('Drive load failed', err);
-      setAuthStatus('local', 'Could not reach Drive — using local copy');
+      if(err && err.message === 'drive-decrypt-failed'){
+        setAuthStatus('local', 'Could not decrypt cloud data — check your PIN');
+      } else if(err && err.message === 'drive-pin-cancelled'){
+        setAuthStatus('local', 'Cloud data needs your PIN to sync');
+      } else {
+        setAuthStatus('local', 'Could not reach Drive — using local copy');
+      }
     });
   }
 
   function saveToDrive(){
-    var body = JSON.stringify({ habits: state.habits, logs: state.logs, updatedAt: Date.now() });
-    var chain = driveFileId ? Promise.resolve(driveFileId) : findDriveFile();
-    return chain.then(function(id){
-      if(id){
-        driveFileId = id;
-        return driveFetch('https://www.googleapis.com/upload/drive/v3/files/' + id + '?uploadType=media', {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: body
-        });
-      } else {
-        var metadata = { name: DRIVE_FILENAME, parents: ['appDataFolder'] };
-        var form = new FormData();
-        form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-        form.append('file', new Blob([body], { type: 'application/json' }));
-        return driveFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', {
-          method: 'POST',
-          body: form
-        }).then(function(res){ return res.json(); })
-          .then(function(data){ driveFileId = data.id; });
-      }
+    return buildPersistedPayload().then(function(payloadObj){
+      payloadObj.updatedAt = Date.now();
+      var body = JSON.stringify(payloadObj);
+      var chain = driveFileId ? Promise.resolve(driveFileId) : findDriveFile();
+      return chain.then(function(id){
+        if(id){
+          driveFileId = id;
+          return driveFetch('https://www.googleapis.com/upload/drive/v3/files/' + id + '?uploadType=media', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: body
+          });
+        } else {
+          var metadata = { name: DRIVE_FILENAME, parents: ['appDataFolder'] };
+          var form = new FormData();
+          form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+          form.append('file', new Blob([body], { type: 'application/json' }));
+          return driveFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', {
+            method: 'POST',
+            body: form
+          }).then(function(res){ return res.json(); })
+            .then(function(data){ driveFileId = data.id; });
+        }
+      });
     }).then(function(){
       setAuthStatus('synced', 'Synced with Google Drive' + (currentUser ? ' — ' + currentUser : ''));
     }).catch(function(err){
       console.error('Drive save failed', err);
-      if(err.message === 'unauthorized'){
+      if(err && err.message === 'unauthorized'){
         setAuthStatus('local', 'Session expired — sign in again to keep syncing');
         currentUser = null; accessToken = null; updateAuthButton();
       } else {
@@ -720,6 +915,305 @@
     setAuthStatus('local', 'Checking Google sign-in…');
     silentAttemptInFlight = true;
     tokenClient.requestAccessToken({ prompt: '' });
+  }
+
+  // ===== PIN lock UI — drives real AES-GCM encryption of stored data =====
+  var authAndSwStarted = false;
+  var lockMode = null;
+  var pendingDrivePayload = null;
+  var pendingDriveResolve = null;
+  var pendingDriveReject = null;
+
+  var lockOverlay = document.getElementById('lockOverlay');
+  var lockTitle = document.getElementById('lockTitle');
+  var lockSubEl = document.getElementById('lockSub');
+  var pinField1 = document.getElementById('pinField1');
+  var pinField2 = document.getElementById('pinField2');
+  var lockError = document.getElementById('lockError');
+  var lockSubmitBtn = document.getElementById('lockSubmitBtn');
+  var lockCancelBtn = document.getElementById('lockCancelBtn');
+  var lockForgotBtn = document.getElementById('lockForgotBtn');
+
+  function showLockError(msg){
+    lockError.textContent = msg;
+    lockError.style.display = 'block';
+  }
+  function clearLockError(){
+    lockError.style.display = 'none';
+    lockError.textContent = '';
+  }
+
+  function openLock(mode){
+    lockMode = mode;
+    clearLockError();
+    pinField1.value = '';
+    pinField2.value = '';
+    pinField2.style.display = 'none';
+    lockCancelBtn.style.display = 'none';
+    lockCancelBtn.textContent = 'Cancel';
+    lockForgotBtn.style.display = 'none';
+
+    if(mode === 'unlock'){
+      lockTitle.textContent = 'Enter PIN';
+      lockSubEl.textContent = 'Your data is encrypted on this device.';
+      lockSubmitBtn.textContent = 'Unlock';
+      lockForgotBtn.style.display = 'block';
+    } else if(mode === 'unlock-drive'){
+      lockTitle.textContent = 'Enter PIN';
+      lockSubEl.textContent = 'Your synced data is encrypted — enter your PIN to load it here.';
+      lockSubmitBtn.textContent = 'Unlock';
+      lockCancelBtn.style.display = 'block';
+      lockCancelBtn.textContent = 'Skip for now';
+    } else if(mode === 'setup'){
+      lockTitle.textContent = 'Set a PIN';
+      lockSubEl.textContent = 'This PIN encrypts your habit data, on this device and in Drive. Remember it — it cannot be recovered if forgotten.';
+      pinField2.style.display = 'block';
+      pinField2.placeholder = 'Confirm PIN';
+      lockSubmitBtn.textContent = 'Encrypt with this PIN';
+      lockCancelBtn.style.display = 'block';
+    } else if(mode === 'change-verify'){
+      lockTitle.textContent = 'Enter current PIN';
+      lockSubEl.textContent = 'Verify your current PIN to change it.';
+      lockSubmitBtn.textContent = 'Continue';
+      lockCancelBtn.style.display = 'block';
+    } else if(mode === 'change-new'){
+      lockTitle.textContent = 'Set a new PIN';
+      lockSubEl.textContent = 'Your data will be re-encrypted with this PIN.';
+      pinField2.style.display = 'block';
+      pinField2.placeholder = 'Confirm new PIN';
+      lockSubmitBtn.textContent = 'Save new PIN';
+      lockCancelBtn.style.display = 'block';
+    } else if(mode === 'turnoff-verify'){
+      lockTitle.textContent = 'Enter current PIN';
+      lockSubEl.textContent = 'Verify your PIN to remove encryption and store your data in plain form again.';
+      lockSubmitBtn.textContent = 'Turn off encryption';
+      lockCancelBtn.style.display = 'block';
+    }
+
+    lockOverlay.style.display = 'flex';
+    pinField1.focus();
+  }
+
+  function closeLock(){
+    lockOverlay.style.display = 'none';
+    lockMode = null;
+    pinField1.value = '';
+    pinField2.value = '';
+  }
+
+  function startAuthAndSW(){
+    if(authAndSwStarted) return;
+    authAndSwStarted = true;
+    initAuth();
+    if('serviceWorker' in navigator){
+      navigator.serviceWorker.register('service-worker.js').catch(function(err){
+        console.error('Service worker registration failed', err);
+      });
+    }
+  }
+
+  // Called by loadFromDrive() when it hits encrypted Drive data but no PIN
+  // has been unlocked locally yet (e.g. a fresh device). Resolves with the
+  // decrypted {habits, logs}, or rejects if the user skips.
+  function promptPinForDrivePayload(content){
+    return new Promise(function(resolve, reject){
+      pendingDrivePayload = content;
+      pendingDriveResolve = resolve;
+      pendingDriveReject = reject;
+      openLock('unlock-drive');
+    });
+  }
+
+  lockCancelBtn.addEventListener('click', function(){
+    if(lockMode === 'unlock-drive' && pendingDriveReject){
+      var reject = pendingDriveReject;
+      pendingDrivePayload = null; pendingDriveResolve = null; pendingDriveReject = null;
+      closeLock();
+      reject(new Error('drive-pin-cancelled'));
+      return;
+    }
+    closeLock();
+    renderPinStatus();
+  });
+
+  lockForgotBtn.addEventListener('click', function(){
+    var ok = window.confirm(
+      'Forgetting your PIN means the encrypted habit data on this device cannot be recovered — ' +
+      'there is no reset for it. This will erase it here and let you start fresh on this device.\n\n' +
+      'If this account\'s data is also synced to Google Drive, it stays encrypted there; to fully ' +
+      'clear it too, remove this app\'s access from your Google Account\'s "Third-party apps" settings.\n\n' +
+      'Erase this device\'s data and start over?'
+    );
+    if(!ok) return;
+    try{ localStorage.removeItem(STORAGE_KEY); }catch(e){}
+    pinEnabled = false;
+    pinLocked = false;
+    sessionPin = null;
+    currentSalt = null;
+    keyCache = {};
+    state = { habits: [], logs: {} };
+    closeLock();
+    renderAll();
+    startAuthAndSW();
+  });
+
+  function submitLock(){
+    var pin1 = pinField1.value.trim();
+    var pin2 = pinField2.value.trim();
+    clearLockError();
+
+    if(!pin1 || pin1.length < 4){
+      showLockError('PIN must be at least 4 digits.');
+      return;
+    }
+
+    if(lockMode === 'unlock'){
+      var raw = readRawLocal();
+      if(!raw || !raw.encrypted){ showLockError('No encrypted data found on this device.'); return; }
+      var unlockedKey;
+      deriveKey(pin1, raw.salt).then(function(key){
+        unlockedKey = key;
+        return decryptJSON(raw, key);
+      }).then(function(decrypted){
+        sessionPin = pin1;
+        currentSalt = raw.salt;
+        keyCache[raw.salt] = Promise.resolve(unlockedKey);
+        pinEnabled = true;
+        pinLocked = false;
+        state = { habits: decrypted.habits || [], logs: decrypted.logs || {} };
+        closeLock();
+        renderAll();
+        startAuthAndSW();
+      }).catch(function(){
+        showLockError('Incorrect PIN.');
+      });
+    } else if(lockMode === 'unlock-drive'){
+      var content = pendingDrivePayload;
+      var driveKey;
+      deriveKey(pin1, content.salt).then(function(key){
+        driveKey = key;
+        return decryptJSON(content, key);
+      }).then(function(decrypted){
+        sessionPin = pin1;
+        keyCache[content.salt] = Promise.resolve(driveKey);
+        var resolve = pendingDriveResolve;
+        pendingDrivePayload = null; pendingDriveResolve = null; pendingDriveReject = null;
+        closeLock();
+        resolve(decrypted);
+      }).catch(function(){
+        showLockError('Incorrect PIN.');
+      });
+    } else if(lockMode === 'setup'){
+      if(pin1 !== pin2){ showLockError('PINs do not match.'); return; }
+      var salt = randomSaltB64();
+      sessionPin = pin1;
+      currentSalt = salt;
+      pinEnabled = true;
+      keyCache = {};
+      saveState();
+      closeLock();
+      renderPinStatus();
+    } else if(lockMode === 'change-verify'){
+      var raw2 = readRawLocal();
+      deriveKey(pin1, raw2.salt).then(function(key){
+        return decryptJSON(raw2, key);
+      }).then(function(){
+        openLock('change-new');
+      }).catch(function(){
+        showLockError('Incorrect PIN.');
+      });
+    } else if(lockMode === 'change-new'){
+      if(pin1 !== pin2){ showLockError('PINs do not match.'); return; }
+      var newSalt = randomSaltB64();
+      sessionPin = pin1;
+      currentSalt = newSalt;
+      keyCache = {};
+      saveState();
+      closeLock();
+      renderPinStatus();
+    } else if(lockMode === 'turnoff-verify'){
+      var raw3 = readRawLocal();
+      deriveKey(pin1, raw3.salt).then(function(key){
+        return decryptJSON(raw3, key);
+      }).then(function(decrypted){
+        pinEnabled = false;
+        sessionPin = null;
+        currentSalt = null;
+        keyCache = {};
+        state = { habits: decrypted.habits || [], logs: decrypted.logs || {} };
+        saveState();
+        closeLock();
+        renderPinStatus();
+      }).catch(function(){
+        showLockError('Incorrect PIN.');
+      });
+    }
+  }
+
+  lockSubmitBtn.addEventListener('click', submitLock);
+  [pinField1, pinField2].forEach(function(f){
+    f.addEventListener('keydown', function(e){
+      if(e.key === 'Enter') submitLock();
+    });
+  });
+
+  function renderPinStatus(){
+    var el = document.getElementById('pinStatus');
+    if(!el) return;
+    el.innerHTML = '';
+
+    if(!pinSupported){
+      el.appendChild(insightCard(
+        'PIN encryption isn\'t available',
+        'This browser context doesn\'t support the Web Crypto features needed for it.'
+      ));
+      return;
+    }
+
+    var card = document.createElement('div');
+    card.className = 'insight-card';
+
+    if(!pinEnabled){
+      card.innerHTML = '<div class="headline">Your data isn\'t encrypted</div><div class="sub">Set a PIN to encrypt your habits and history, on this device and in Google Drive.</div>';
+      var setBtn = document.createElement('button');
+      setBtn.className = 'btn small';
+      setBtn.style.marginTop = '8px';
+      setBtn.textContent = 'Set a PIN';
+      setBtn.addEventListener('click', function(){ openLock('setup'); });
+      card.appendChild(setBtn);
+    } else {
+      card.innerHTML = '<div class="headline">Data is encrypted with your PIN</div><div class="sub">You\'ll need it each time you open the app, on every device.</div>';
+      var row = document.createElement('div');
+      row.style.cssText = 'margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;';
+
+      var lockNowBtn = document.createElement('button');
+      lockNowBtn.className = 'btn small';
+      lockNowBtn.textContent = 'Lock now';
+      lockNowBtn.addEventListener('click', function(){
+        pinLocked = true;
+        sessionPin = null;
+        keyCache = {};
+        state = { habits: [], logs: {} };
+        renderAll();
+        openLock('unlock');
+      });
+
+      var changeBtn = document.createElement('button');
+      changeBtn.className = 'btn secondary small';
+      changeBtn.textContent = 'Change PIN';
+      changeBtn.addEventListener('click', function(){ openLock('change-verify'); });
+
+      var offBtn = document.createElement('button');
+      offBtn.className = 'btn secondary small';
+      offBtn.textContent = 'Turn off encryption';
+      offBtn.addEventListener('click', function(){ openLock('turnoff-verify'); });
+
+      row.appendChild(lockNowBtn);
+      row.appendChild(changeBtn);
+      row.appendChild(offBtn);
+      card.appendChild(row);
+    }
+    el.appendChild(card);
   }
 
   var state = loadLocalState();
@@ -839,6 +1333,39 @@
     return streak;
   }
 
+  // Consecutive days ending at a given date that ONE specific habit was
+  // marked done.
+  function habitStreakEndingAt(habitId, endDate){
+    var earliest = earliestLogDate();
+    if(!earliest) return 0;
+    var streak = 0;
+    var d = new Date(endDate);
+    while(true){
+      var key = dateKey(d);
+      if(key < earliest) break;
+      var log = state.logs[key];
+      if(!log || !log[habitId]) break;
+      streak++;
+      d.setDate(d.getDate() - 1);
+    }
+    return streak;
+  }
+
+  function habitCurrentStreak(habitId){
+    return habitStreakEndingAt(habitId, new Date());
+  }
+
+  // The streak "as of right now" for display purposes — counts through
+  // yesterday if today hasn't been logged yet, so it doesn't drop to 0
+  // every morning before you've had a chance to check in.
+  function displayStreakFor(h){
+    var today = state.logs[todayKey()];
+    var doneToday = !!(today && today[h.id]);
+    var end = new Date();
+    if(!doneToday){ end.setDate(end.getDate() - 1); }
+    return habitStreakEndingAt(h.id, end);
+  }
+
   function longestCleanStreak(){
     var earliest = earliestLogDate();
     if(!earliest) return 0;
@@ -864,7 +1391,8 @@
   function habitStats(windowKeys){
     var activeDays = windowKeys.filter(function(k){ return !!state.logs[k]; });
     var denom = activeDays.length;
-    var stats = state.habits.map(function(h){
+    var trackedHabits = state.habits.filter(function(h){ return !h.archived; });
+    var stats = trackedHabits.map(function(h){
       var doneCount = 0, totalPoints = 0;
       activeDays.forEach(function(k){
         if(state.logs[k][h.id]){
@@ -941,18 +1469,20 @@
     goodEl.innerHTML = '';
     badEl.innerHTML = '';
 
-    var goods = state.habits.filter(function(h){ return h.type === 'good'; });
-    var bads = state.habits.filter(function(h){ return h.type === 'bad'; });
+    var goods = state.habits.filter(function(h){ return h.type === 'good' && !h.archived; });
+    var bads = state.habits.filter(function(h){ return h.type === 'bad' && !h.archived; });
 
     function card(h){
       var done = !!log[h.id];
+      var streak = displayStreakFor(h);
+      var streakText = streak >= 2 ? ' · ' + streak + '-day streak' : '';
       var div = document.createElement('div');
       div.className = 'habit-card ' + h.type + (done ? ' done' : '');
       div.innerHTML =
         '<div class="habit-check">' + (done ? '✓' : '') + '</div>' +
         '<div class="habit-info">' +
           '<div class="habit-name">'+escapeHtml(h.name)+'</div>' +
-          '<div class="habit-meta">weight '+h.weight+'</div>' +
+          '<div class="habit-meta">weight '+h.weight+escapeHtml(streakText)+'</div>' +
         '</div>' +
         '<div class="habit-points '+h.type+'">' + (h.type==='good' ? '+':'-') + h.weight + '</div>';
       div.addEventListener('click', function(){
@@ -969,8 +1499,9 @@
     goods.forEach(function(h){ goodEl.appendChild(card(h)); });
     bads.forEach(function(h){ badEl.appendChild(card(h)); });
 
-    document.getElementById('todayEmpty').style.display = state.habits.length ? 'none' : 'block';
-    document.querySelector('.section-title').style.display = goods.length || !state.habits.length ? 'block' : 'none';
+    var activeCount = state.habits.filter(function(h){ return !h.archived; }).length;
+    document.getElementById('todayEmpty').style.display = activeCount ? 'none' : 'block';
+    document.querySelector('.section-title').style.display = goods.length || !activeCount ? 'block' : 'none';
   }
 
   function escapeHtml(s){
@@ -982,42 +1513,99 @@
   function renderManage(){
     var listEl = document.getElementById('manageList');
     listEl.innerHTML = '';
-    state.habits.forEach(function(h){
+
+    var active = state.habits.filter(function(h){ return !h.archived; });
+    var archived = state.habits.filter(function(h){ return h.archived; });
+
+    function habitRow(h, options){
       var row = document.createElement('div');
       row.className = 'manage-row';
       row.innerHTML =
         '<div class="habit-points '+h.type+'" style="min-width:20px;">' + (h.type==='good'?'+':'-') + '</div>' +
         '<div class="habit-name">'+escapeHtml(h.name)+'</div>';
 
-      var weightSel = document.createElement('select');
-      weightSel.className = 'weight-select';
-      [1,2,3,4,5].forEach(function(v){
-        var opt = document.createElement('option');
-        opt.value = v; opt.textContent = v;
-        if(v === h.weight) opt.selected = true;
-        weightSel.appendChild(opt);
-      });
-      weightSel.addEventListener('change', function(){
-        h.weight = parseInt(weightSel.value, 10);
-        saveState();
-        renderScores();
-        renderToday();
-      });
-      row.appendChild(weightSel);
+      if(options.showWeight){
+        var weightSel = document.createElement('select');
+        weightSel.className = 'weight-select';
+        [1,2,3,4,5].forEach(function(v){
+          var opt = document.createElement('option');
+          opt.value = v; opt.textContent = v;
+          if(v === h.weight) opt.selected = true;
+          weightSel.appendChild(opt);
+        });
+        weightSel.addEventListener('change', function(){
+          h.weight = parseInt(weightSel.value, 10);
+          saveState();
+          renderScores();
+          renderToday();
+        });
+        row.appendChild(weightSel);
+      }
 
-      var delBtn = document.createElement('button');
-      delBtn.className = 'btn danger';
-      delBtn.textContent = 'Remove';
-      delBtn.addEventListener('click', function(){
-        state.habits = state.habits.filter(function(x){ return x.id !== h.id; });
-        saveState();
-        renderAll();
-      });
-      row.appendChild(delBtn);
+      if(options.showArchive){
+        var archiveBtn = document.createElement('button');
+        archiveBtn.className = 'btn secondary small';
+        archiveBtn.textContent = 'Archive';
+        archiveBtn.title = 'Stop logging this habit going forward, but keep its history';
+        archiveBtn.addEventListener('click', function(){
+          h.archived = true;
+          saveState();
+          renderAll();
+        });
+        row.appendChild(archiveBtn);
+      }
 
-      listEl.appendChild(row);
+      if(options.showRestore){
+        var restoreBtn = document.createElement('button');
+        restoreBtn.className = 'btn secondary small';
+        restoreBtn.textContent = 'Restore';
+        restoreBtn.addEventListener('click', function(){
+          delete h.archived;
+          saveState();
+          renderAll();
+        });
+        row.appendChild(restoreBtn);
+      }
+
+      if(options.showDelete){
+        var delBtn = document.createElement('button');
+        delBtn.className = 'btn danger';
+        delBtn.textContent = 'Delete forever';
+        delBtn.addEventListener('click', function(){
+          var ok = window.confirm('Permanently delete "' + h.name + '" and erase its history from every past day\'s score? This can\'t be undone.');
+          if(!ok) return;
+          state.habits = state.habits.filter(function(x){ return x.id !== h.id; });
+          Object.keys(state.logs).forEach(function(dateKey){
+            delete state.logs[dateKey][h.id];
+          });
+          saveState();
+          renderAll();
+        });
+        row.appendChild(delBtn);
+      }
+
+      return row;
+    }
+
+    active.forEach(function(h){
+      listEl.appendChild(habitRow(h, { showWeight: true, showArchive: true }));
     });
-    document.getElementById('manageEmpty').style.display = state.habits.length ? 'none' : 'block';
+
+    document.getElementById('manageEmpty').style.display = active.length ? 'none' : 'block';
+
+    var archivedSection = document.getElementById('archivedSection');
+    var archivedList = document.getElementById('archivedList');
+    archivedList.innerHTML = '';
+    if(archived.length){
+      archivedSection.style.display = 'block';
+      archived.forEach(function(h){
+        archivedList.appendChild(habitRow(h, { showRestore: true, showDelete: true }));
+      });
+    } else {
+      archivedSection.style.display = 'none';
+    }
+
+    renderPinStatus();
   }
 
   function renderHistory(){
@@ -1097,7 +1685,150 @@
     return div;
   }
 
+  // Generic behavior-science messaging by streak length — deliberately not
+  // tied to what any specific habit is (the app has no way to know that),
+  // just to the fact of repetition itself.
+  var GOOD_STREAK_TIERS = [
+    { min: 3,  msg: 'Three days in a row — you\'re past the hardest part of starting something new.' },
+    { min: 7,  msg: 'A full week. This is roughly when a deliberate action starts feeling less like effort.' },
+    { min: 14, msg: 'Two weeks straight. Habit-formation research puts the median time to automaticity around 66 days — you\'re well on your way.' },
+    { min: 21, msg: '21 days in a row. Whatever friction this used to have is fading.' },
+    { min: 30, msg: 'A full month — this is genuinely part of your routine now, not an act of willpower.' },
+    { min: 66, msg: 'Past the average time habits take to become automatic (~66 days). This one is close to locked in.' }
+  ];
+  var BAD_STREAK_TIERS = [
+    { min: 3,  msg: 'Three days in a row. Worth noticing before it settles in as the default.' },
+    { min: 7,  msg: 'A full week straight. At this point it\'s less a slip and more a pattern.' },
+    { min: 14, msg: 'Two weeks in a row. Repetition is what wires a behavior in, good or bad — worth a look at what\'s triggering it.' },
+    { min: 21, msg: '21 days straight. This has likely become close to automatic — breaking it now will take deliberate friction, not just willpower.' },
+    { min: 30, msg: 'A month straight. This is functioning as an established habit now, not an occasional lapse.' }
+  ];
+
+  function pickTier(tiers, streak){
+    var chosen = null;
+    tiers.forEach(function(t){ if(streak >= t.min) chosen = t; });
+    return chosen;
+  }
+
+  // Keyword-matched, topic-specific messages. These are general, widely
+  // established public-health associations for the category a habit's name
+  // suggests — not a diagnosis or advice about any individual. First
+  // matching category wins; habits that don't match anything fall back to
+  // the generic streak messaging above.
+  var BAD_CATEGORIES = [
+    { keywords: ['sweet','candy','sugar','dessert','chocolate','soda','cola','coke','ice cream','pastry','cake','cookie'],
+      tier1: 'Frequent sugar intake is linked to weight gain, tooth decay, and blood sugar swings.',
+      tier2: 'Sustained high sugar intake over weeks is a well-established risk factor for type 2 diabetes, obesity, and cardiovascular disease.' },
+    { keywords: ['smoke','smoking','cigarette','cigar','vape','vaping','tobacco'],
+      tier1: 'Smoking is linked to lung irritation, elevated blood pressure, and increased cancer risk.',
+      tier2: 'Sustained smoking significantly raises long-term risk of lung disease, heart disease, and several cancers.' },
+    { keywords: ['alcohol','drink','beer','wine','vodka','whisky','whiskey','rum'],
+      tier1: 'Frequent alcohol use is linked to liver strain, disrupted sleep, and increased blood pressure.',
+      tier2: 'Sustained regular drinking is a well-established risk factor for liver disease, high blood pressure, and dependency.' },
+    { keywords: ['junk food','fast food','fried','chips','burger','pizza'],
+      tier1: 'Regular fast food or fried food intake is linked to weight gain and elevated cholesterol.',
+      tier2: 'Sustained fast-food-heavy eating over weeks is linked to obesity, high cholesterol, and heart disease risk.' },
+    { keywords: ['scroll','doomscroll','social media','instagram','youtube','netflix','tiktok','screen time'],
+      tier1: 'Extended screen time, especially before bed, is linked to poor sleep quality and higher stress.',
+      tier2: 'Sustained heavy screen use over weeks is linked to disrupted sleep cycles, eye strain, and increased anxiety.' },
+    { keywords: ['sleep late','late night','oversleep','stay up','all-nighter','all nighter'],
+      tier1: 'Irregular or insufficient sleep is linked to poor concentration and weakened immunity.',
+      tier2: 'Sustained sleep disruption over weeks raises long-term risk for cardiovascular issues and mood disorders.' },
+    { keywords: ['coffee','caffeine','energy drink'],
+      tier1: 'Excess caffeine intake can raise anxiety, disrupt sleep, and elevate heart rate.',
+      tier2: 'Sustained heavy caffeine intake over weeks can contribute to dependency, chronic sleep disruption, and elevated blood pressure.' },
+    { keywords: ['sitting','sedentary','skip gym','skip workout','no exercise'],
+      tier1: 'Prolonged sitting is linked to weight gain and musculoskeletal strain.',
+      tier2: 'Sustained sedentary time over weeks is a well-established risk factor for cardiovascular disease and obesity.' },
+    { keywords: ['procrastinat'],
+      tier1: 'Frequent procrastination is linked to higher stress and anxiety.',
+      tier2: 'Chronic procrastination over weeks is linked to sustained stress, poorer sleep, and lower overall satisfaction.' },
+    { keywords: ['nail bite', 'biting nails', 'nail-biting'],
+      tier1: 'Nail biting can introduce infection risk and damage to teeth and cuticles.',
+      tier2: 'Sustained nail biting over weeks increases the risk of infection and dental wear.' }
+  ];
+  var GOOD_CATEGORIES = [
+    { keywords: ['exercise','workout','gym','run','jog','cardio','yoga','swim','cycling'],
+      tier1: 'Regular movement is linked to better cardiovascular health and mood.',
+      tier2: 'Weeks of consistent exercise compound into meaningfully lower long-term risk of heart disease and better metabolic health.' },
+    { keywords: ['read'],
+      tier1: 'Regular reading is linked to improved focus and reduced stress.',
+      tier2: 'Sustained reading habits over weeks are linked to better long-term cognitive function and vocabulary retention.' },
+    { keywords: ['water','hydrat'],
+      tier1: 'Consistent hydration supports energy levels, skin health, and kidney function.',
+      tier2: 'Weeks of consistent hydration meaningfully supports long-term kidney and metabolic health.' },
+    { keywords: ['sleep early','early sleep','good sleep','sleep on time','wind down'],
+      tier1: 'Consistent, adequate sleep is linked to better mood regulation and immune function.',
+      tier2: 'Weeks of consistent healthy sleep meaningfully lowers long-term risk of cardiovascular and metabolic issues.' },
+    { keywords: ['meditat','mindful','breathing exercise'],
+      tier1: 'Regular meditation is linked to lower stress and improved emotional regulation.',
+      tier2: 'Weeks of consistent meditation practice are linked to measurable reductions in baseline stress and anxiety.' },
+    { keywords: ['study','learn','course','practice'],
+      tier1: 'Regular study or practice compounds skill retention and builds toward mastery.',
+      tier2: 'Weeks of consistent study are linked to substantially better long-term retention than cramming.' },
+    { keywords: ['budget','save money','expense','invest'],
+      tier1: 'Consistent budgeting habits compound into stronger long-term financial stability.',
+      tier2: 'Weeks of consistent financial discipline meaningfully improves long-term savings outcomes.' },
+    { keywords: ['walk'],
+      tier1: 'Regular walking is linked to better cardiovascular health and mood.',
+      tier2: 'Weeks of consistent walking compound into meaningfully lower long-term risk of heart disease and better metabolic health.' }
+  ];
+
+  function categoryMessage(h, streak){
+    var name = h.name.toLowerCase();
+    var categories = h.type === 'good' ? GOOD_CATEGORIES : BAD_CATEGORIES;
+    for(var i=0;i<categories.length;i++){
+      var cat = categories[i];
+      for(var j=0;j<cat.keywords.length;j++){
+        if(name.indexOf(cat.keywords[j]) !== -1){
+          return streak >= 14 ? cat.tier2 : cat.tier1;
+        }
+      }
+    }
+    return null;
+  }
+
+  function renderStreakWatch(){
+    var el = document.getElementById('streakWatch');
+    if(!el) return;
+    el.innerHTML = '';
+
+    var active = state.habits.filter(function(h){ return !h.archived; });
+    var items = [];
+    active.forEach(function(h){
+      var streak = displayStreakFor(h);
+      if(streak < 3) return;
+      var msg = categoryMessage(h, streak);
+      if(!msg){
+        var tier = pickTier(h.type === 'good' ? GOOD_STREAK_TIERS : BAD_STREAK_TIERS, streak);
+        msg = tier ? tier.msg : null;
+      }
+      if(msg){ items.push({ habit: h, streak: streak, msg: msg }); }
+    });
+
+    if(!items.length){
+      el.appendChild(Object.assign(document.createElement('div'), {
+        className: 'insight-empty',
+        textContent: 'Nothing on a notable streak yet (3+ days in a row) — check back as you log more days.'
+      }));
+      return;
+    }
+
+    items.sort(function(a,b){ return b.streak - a.streak; });
+    items.forEach(function(it){
+      var icon = it.habit.type === 'good' ? '✅' : '⚠️';
+      var card = insightCard(
+        icon + ' "' + it.habit.name + '" — ' + it.streak + '-day streak',
+        it.msg
+      );
+      card.classList.add(it.habit.type === 'good' ? 'streak-good' : 'streak-bad');
+      el.appendChild(card);
+    });
+  }
+
   function renderInsights(){
+    renderStreakWatch();
+
     // --- Week over week (fair comparison: same number of days elapsed) ---
     var thisWeekKeys = weekKeys();
     var daysElapsed = thisWeekKeys.length;
@@ -1139,7 +1870,7 @@
     var habitsEl = document.getElementById('insightHabits');
     habitsEl.innerHTML = '';
 
-    if(!state.habits.length || hs.denom < 3){
+    if(!hs.stats.length || hs.denom < 3){
       habitsEl.appendChild(Object.assign(document.createElement('div'), {
         className: 'insight-empty',
         textContent: 'Log a few more days to see habit-level patterns.'
@@ -1253,13 +1984,18 @@
 
   renderAll();
 
+  var bootRaw = pinSupported ? readRawLocal() : null;
+  if(bootRaw && bootRaw.encrypted){
+    pinEnabled = true;
+    pinLocked = true;
+    openLock('unlock');
+  }
+
   window.addEventListener('load', function(){
-    initAuth();
-    if('serviceWorker' in navigator){
-      navigator.serviceWorker.register('service-worker.js').catch(function(err){
-        console.error('Service worker registration failed', err);
-      });
+    if(!pinLocked){
+      startAuthAndSW();
     }
+    // If locked, startAuthAndSW() runs instead once the correct PIN is entered.
   });
 })();
 </script>
